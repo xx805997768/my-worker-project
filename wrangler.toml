@@ -1,7 +1,7 @@
-name = "w"
-account_id = "76abf68faef4a57f43947ab980872d68"
+name = "my-worker"
+account_id = "76abf68faef4a57f43947ab980872d68"  # 替换为你的Cloudflare Account ID
 main = "src/index.js"
-compatibility_date = "2025-10-21"
+compatibility_date = "2025-10-23"
 workers_dev = true
 compatibility_flags = ["nodejs_compat"]
 
