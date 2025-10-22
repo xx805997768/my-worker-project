@@ -6,6 +6,7 @@ workers_dev = true
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
-user = "efb540d0-350a-47f8-b0b8-ce2da0b7155d"  # 替换为你的UUID
-target = "proxyip.cmliussss.net"  # 替换为你的目标域名
+user = "0acb0ed8-9c48-4048-b8d5-5c336bb76842"  # 替换为你的UUID
+target = "bpb.yousef.isegaro.com"  # 替换为你的目标域名
+
 
