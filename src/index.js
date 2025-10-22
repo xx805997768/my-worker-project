@@ -9,8 +9,8 @@
 import { connect } from 'cloudflare:sockets';
 
 // Defaults.
-let user = 'ab795787-6ea6-4644-9e6c-4147c654b1a9'; // Override with env.user.
-let target = 'proxyip.cmliussss.net'; // Override with env.target.
+let user = '0acb0ed8-9c48-4048-b8d5-5c336bb76842'; // Override with env.user.
+let target = 'bpb.yousef.isegaro.com'; // Override with env.target.
 const resolver = 'https://cloudflare-dns.com/dns-query';
 const primaryHostname = 'https://httpbin.org'; // Primary API.
 const fallbackHostname = 'https://dummyjson.com'; // Fallback.
@@ -52,7 +52,6 @@ async function handleProxy(request) {
         });
       }
     }
-    // Parse and reformat httpbin.org response
     const data = await response.json();
     return new Response(JSON.stringify({ reply: `Echo: ${data.args.msg || 'No message'}` }), {
       status: 200,
@@ -208,8 +207,11 @@ async function handleConnection(request, ctx) {
           }
           if (remoteSocket.value) {
             const writer = remoteSocket.value.writable.getWriter();
-            await writer.write(chunk);
-            writer.releaseLock();
+            try {
+              await writer.write(chunk);
+            } finally {
+              writer.releaseLock(); // 确保释放锁
+            }
             return;
           }
           const { hasError, message, portRemote = 443, addressRemote = '', rawDataIndex, version = new Uint8Array([0, 0]), isUDP, addressType } = parseHeader(chunk, user);
@@ -240,7 +242,7 @@ async function handleConnection(request, ctx) {
           await handleTCP(remoteSocket, resolvedAddress, portRemote, rawData, webSocket, responseHeader);
         } catch (writeErr) {
           console.error('Write error:', writeErr);
-          throw writeErr; // 内部错误向上抛
+          throw writeErr;
         }
       },
       close() {
@@ -266,8 +268,11 @@ async function handleTCP(remoteSocket, addressRemote, portRemote, rawData, webSo
       const tcpSocket = connect({ hostname: address, port });
       remoteSocket.value = tcpSocket;
       const writer = tcpSocket.writable.getWriter();
-      await writer.write(rawData);
-      writer.releaseLock();
+      try {
+        await writer.write(rawData);
+      } finally {
+        writer.releaseLock(); // 确保释放锁
+      }
       return tcpSocket;
     }
     async function retry(attempt = 0) {
@@ -287,7 +292,7 @@ async function handleTCP(remoteSocket, addressRemote, portRemote, rawData, webSo
   } catch (err) {
     console.error('TCP error:', err);
     safeClose(webSocket);
-    throw err; // 或返回错误响应
+    throw err;
   }
 }
 
