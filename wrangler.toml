@@ -1,0 +1,10 @@
+name = "w"
+account_id = "76abf68faef4a57f43947ab980872d68"
+main = "src/index.js"
+compatibility_date = "2025-10-21"
+workers_dev = true
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+user = "efb540d0-350a-47f8-b0b8-ce2da0b7155d"  # 替换为你的UUID
+target = "proxyip.cmliussss.net"  # 替换为你的目标域名
