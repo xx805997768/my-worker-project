@@ -1,19 +1,18 @@
-// Cloudflare Workers script for pseudo-ChatGPT page with WebSocket and API proxy.
+// Cloudflare Workers script for pseudo-ChatGPT page with WebSocket and API proxy using NAT64.
 // Renders ChatGPT-like HTML for non-WebSocket/non-API requests.
-// Proxies /api/reply with fallback handling, fixes 503 errors.
-// Handles WebSocket for TCP/UDP forwarding with VLESS support.
+// Proxies /api/reply with local echo to avoid external dependency failures (fixes 503).
+// Handles WebSocket for TCP/UDP forwarding with VLESS and NAT64 IPv6 prefixes.
 // Generates VLESS configs at /nodes: workers.dev (80-series), custom domain (80+443 series with TLS).
-// Includes robust error handling, logging, and proxy reliability for V2RayN (10808/10809).
+// Supports NAT64 (2a02:898:146:64::, 2602:fc59:b0:64::, 2602:fc59:11:64::) as target for IPv6-only proxying.
+// Includes robust error handling and logging for V2RayN compatibility (10808/10809).
 // For testing; proxy may violate ToS.
 
 import { connect } from 'cloudflare:sockets';
 
 // Defaults.
 let user = '0acb0ed8-9c48-4048-b8d5-5c336bb76842'; // Override with env.user.
-let target = '203.0.113.5'; // Override with env.target, updated IP.
+let target = '2a02:898:146:64::'; // NAT64 prefix, override with env.target (e.g., 2602:fc59:b0:64::).
 const resolver = 'https://cloudflare-dns.com/dns-query';
-const primaryHostname = 'https://httpbin.org'; // Primary API.
-const fallbackHostname = 'https://dummyjson.com'; // Fallback.
 
 // Validate user ID.
 function isValidUser(id) {
@@ -31,33 +30,12 @@ function isApi(request) {
   return url.pathname.startsWith('/api/reply') || url.pathname.startsWith('/conversation');
 }
 
-// Proxy API with enhanced fallback and logging.
+// Proxy API with local echo (no external fetch to avoid 503).
 async function handleProxy(request) {
   try {
     const url = new URL(request.url);
-    let targetUrl = primaryHostname + '/get' + url.search;
-    console.log('Proxy: Attempting fetch to', targetUrl);
-    let newRequest = new Request(targetUrl, request);
-    newRequest.headers.set('User-Agent', 'Mozilla/5.0 GPT-Client');
-    let response = await fetch(newRequest);
-    console.log('Proxy: Fetch response status', response.status);
-
-    if (response.status === 404 || response.status === 503) {
-      console.warn('Proxy: Primary API failed with', response.status, 'falling back to', fallbackHostname);
-      targetUrl = fallbackHostname + '/quotes/random';
-      console.log('Proxy: Fallback fetch to', targetUrl);
-      newRequest = new Request(targetUrl, request);
-      response = await fetch(newRequest);
-      if (!response.ok) {
-        console.error('Proxy: Fallback failed, returning echo');
-        return new Response(JSON.stringify({ reply: `Echo: ${url.searchParams.get('msg') || 'Hello'}` }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-    }
-    const data = await response.json();
-    return new Response(JSON.stringify({ reply: `Echo: ${data.args.msg || 'No message'}` }), {
+    console.log('Proxy: Processing request for', url.pathname + url.search);
+    return new Response(JSON.stringify({ reply: `Echo: ${url.searchParams.get('msg') || 'Hello'}` }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -158,7 +136,7 @@ export default {
   },
 };
 
-// WebSocket connection.
+// WebSocket connection with NAT64 support.
 async function handleConnection(request, ctx) {
   try {
     const webSocketPair = new WebSocketPair();
@@ -211,7 +189,7 @@ async function handleConnection(request, ctx) {
           if (addressType === 2) {
             const queryIP = await resolveDomain(addressRemote);
             if (queryIP && isRestrictedIP(queryIP)) {
-              resolvedAddress = `64.68.192.${Math.floor(Math.random() * 255)}`;
+              resolvedAddress = `[2602:fc59:b0:64::]`; // NAT64 fallback
             } else if (queryIP) {
               resolvedAddress = queryIP;
             } else {
@@ -239,11 +217,12 @@ async function handleConnection(request, ctx) {
   }
 }
 
-// TCP outbound with enhanced retry.
+// TCP outbound with NAT64 and IPv6 support.
 async function handleTCP(remoteSocket, addressRemote, portRemote, rawData, webSocket, responseHeader) {
   try {
     let address = addressRemote.endsWith('.workers.dev') || addressRemote === 'workers.dev' ? target : addressRemote;
-    if (!address || isRestrictedIP(address)) address = target; // Fallback to target IP
+    if (address.includes('::')) address = `[${address}]`; // Format IPv6
+    if (!address || isRestrictedIP(address)) address = `[2602:fc59:11:64::]`; // Fallback NAT64
     async function connectAndWrite(port) {
       const tcpSocket = connect({ hostname: address, port });
       remoteSocket.value = tcpSocket;
@@ -390,7 +369,7 @@ function safeClose(socket) {
 // UDP (DNS only).
 async function handleUDP(webSocket, responseHeader) {
   let isClosed = false;
-  const udpSocket = connect({ hostname: '8.8.8.8', port: 53 });
+  const udpSocket = connect({ hostname: '2001:4860:4860::8888', port: 53 }); // Google DNS64
   udpSocket.closed.catch(() => {}).finally(() => {
     isClosed = true;
     safeClose(webSocket);
@@ -431,7 +410,7 @@ for (let i = 0; i < 256; ++i) {
   byteToHex.push(i.toString(16).padStart(2, '0'));
 }
 
-// VLESS configs with dynamic TLS.
+// VLESS configs with dynamic TLS and NAT64 support.
 function generateConfigs(userID, hostName) {
   const httpPorts = ['80', '8080', '8880', '2052', '2082', '2086', '2095']; // 80-series.
   const httpsPorts = ['443', '8443', '2053', '2083', '2087', '2096']; // 443-series.
@@ -449,6 +428,6 @@ function generateConfigs(userID, hostName) {
     const allowInsecure = isHttps ? '&allowInsecure=false' : '';
     configs += `vless://${userID}@${hostName}:${port}?type=ws&security=${security}&path=/?ed=2560&host=${hostName}${allowInsecure}#${hostName}-${security.toUpperCase()}-${port}\n`;
   }
-  configs += '\n地址：自定义域名/优选域名/IP/反代IP\n传输协议：ws/websocket\n伪装域名：workers.dev分配域名\n路径：/?ed=2560';
+  configs += '\n地址：自定义域名/优选域名/IP/反代IP (NAT64: 2a02:898:146:64::)\n传输协议：ws/websocket\n伪装域名：workers.dev分配域名\n路径：/?ed=2560';
   return configs;
 }
