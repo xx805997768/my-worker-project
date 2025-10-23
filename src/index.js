@@ -3,14 +3,14 @@
 // Proxies /api/reply to httpbin.org/get with fallback to dummyjson.com (fixes 404/503).
 // Handles WebSocket for TCP/UDP forwarding (non-CF direct, CF via target).
 // Generates VLESS configs at /nodes: workers.dev subdomain only 80-series ports, custom domain full 80/443 series.
-// Robust error handling for Error 1101 and stream lock issues.
+// Supports TLS for custom domains, fixes stream lock issues, and ensures proxy reliability.
 // For testing; proxy may violate ToS.
 
 import { connect } from 'cloudflare:sockets';
 
 // Defaults.
 let user = '0acb0ed8-9c48-4048-b8d5-5c336bb76842'; // Override with env.user.
-let target = 'bpb.yousef.isegaro.com'; // Override with env.target.
+let target = '203.0.113.5'; // Override with env.target, updated IP.
 const resolver = 'https://cloudflare-dns.com/dns-query';
 const primaryHostname = 'https://httpbin.org'; // Primary API.
 const fallbackHostname = 'https://dummyjson.com'; // Fallback.
@@ -265,6 +265,7 @@ async function handleConnection(request, ctx) {
 async function handleTCP(remoteSocket, addressRemote, portRemote, rawData, webSocket, responseHeader) {
   try {
     let address = addressRemote.endsWith('.workers.dev') || addressRemote === 'workers.dev' ? target : addressRemote;
+    if (!address || isRestrictedIP(address)) address = target; // Fallback to target IP
     async function connectAndWrite(port) {
       const tcpSocket = connect({ hostname: address, port });
       remoteSocket.value = tcpSocket;
@@ -277,14 +278,14 @@ async function handleTCP(remoteSocket, addressRemote, portRemote, rawData, webSo
       return tcpSocket;
     }
     async function retry(attempt = 0) {
-      if (attempt > 2) return;
+      if (attempt > 3) return; // Increased retry limit
       try {
         const tcpSocket = await connectAndWrite(portRemote);
         tcpSocket.closed.catch(() => {}).finally(() => safeClose(webSocket));
         await pipeSocket(tcpSocket, webSocket, responseHeader, () => retry(attempt + 1));
       } catch (retryErr) {
         console.error('Retry failed:', retryErr);
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await new Promise(resolve => setTimeout(resolve, 300)); // Increased delay
         retry(attempt + 1);
       }
     }
@@ -452,7 +453,7 @@ for (let i = 0; i < 256; ++i) {
   byteToHex.push(i.toString(16).padStart(2, '0'));
 }
 
-// VLESS configs (dynamic: workers.dev only 80-series, custom domain full 80/443 series).
+// VLESS configs (dynamic: workers.dev only 80-series, custom domain full 80/443 series with TLS).
 function generateConfigs(userID, hostName) {
   const httpPorts = ['80', '8080', '8880', '2052', '2082', '2086', '2095'];  // 80-series for all.
   const httpsPorts = ['443', '8443', '2053', '2083', '2087', '2096'];  // 443-series only for custom domain.
@@ -462,7 +463,7 @@ function generateConfigs(userID, hostName) {
   if (isWorkersDev) {
     configs += '非TLS (HTTP, 80系列端口) 配置：\n';
   } else {
-    configs += '非TLS (HTTP, 80系列端口) 配置：\n';
+    configs += '非TLS (HTTP, 80系列端口) 配置：\nTLS (HTTPS, 443系列端口) 配置：\n';
   }
   for (const port of portsToUse) {
     const isHttps = httpsPorts.includes(port);
