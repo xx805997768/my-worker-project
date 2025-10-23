@@ -7,4 +7,5 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 user = "0acb0ed8-9c48-4048-b8d5-5c336bb76842"
-target = "2a02:898:146:64::"  # NAT64前缀
+target = "2a02:898:146:64::"  # NAT64 IPv6 前缀，可根据需要修改
+upstream = "bpb.yousef.isegaro.com"  # IPv4 上游中转域名或 IP
