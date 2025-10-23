@@ -1,9 +1,9 @@
 // Cloudflare Workers script for pseudo-ChatGPT page with WebSocket and API proxy.
 // Renders ChatGPT-like HTML for non-WebSocket/non-API requests.
-// Proxies /api/reply to httpbin.org/get with fallback to dummyjson.com (fixes 404/503).
-// Handles WebSocket for TCP/UDP forwarding (non-CF direct, CF via target).
-// Generates VLESS configs at /nodes: workers.dev subdomain only 80-series ports, custom domain full 80/443 series.
-// Supports TLS for custom domains, fixes stream lock issues, and ensures proxy reliability.
+// Proxies /api/reply with fallback handling, fixes 503 errors.
+// Handles WebSocket for TCP/UDP forwarding with VLESS support.
+// Generates VLESS configs at /nodes: workers.dev (80-series), custom domain (80+443 series with TLS).
+// Includes robust error handling, logging, and proxy reliability for V2RayN (10808/10809).
 // For testing; proxy may violate ToS.
 
 import { connect } from 'cloudflare:sockets';
@@ -25,27 +25,31 @@ function isWebSocket(request) {
   return request.headers.get('Upgrade') === 'websocket';
 }
 
-// Check API (fixed for /api/reply).
+// Check API.
 function isApi(request) {
   const url = new URL(request.url);
   return url.pathname.startsWith('/api/reply') || url.pathname.startsWith('/conversation');
 }
 
-// Proxy API (fixes 404/503, returns formatted reply).
+// Proxy API with enhanced fallback and logging.
 async function handleProxy(request) {
   try {
     const url = new URL(request.url);
     let targetUrl = primaryHostname + '/get' + url.search;
+    console.log('Proxy: Attempting fetch to', targetUrl);
     let newRequest = new Request(targetUrl, request);
     newRequest.headers.set('User-Agent', 'Mozilla/5.0 GPT-Client');
     let response = await fetch(newRequest);
+    console.log('Proxy: Fetch response status', response.status);
 
     if (response.status === 404 || response.status === 503) {
-      console.warn(`Primary API ${response.status}, fallback to ${fallbackHostname}`);
+      console.warn('Proxy: Primary API failed with', response.status, 'falling back to', fallbackHostname);
       targetUrl = fallbackHostname + '/quotes/random';
+      console.log('Proxy: Fallback fetch to', targetUrl);
       newRequest = new Request(targetUrl, request);
       response = await fetch(newRequest);
       if (!response.ok) {
+        console.error('Proxy: Fallback failed, returning echo');
         return new Response(JSON.stringify({ reply: `Echo: ${url.searchParams.get('msg') || 'Hello'}` }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -58,7 +62,7 @@ async function handleProxy(request) {
       headers: { 'Content-Type': 'application/json' },
     });
   } catch (err) {
-    console.error('Proxy error:', err);
+    console.error('Proxy error:', err.message);
     return new Response(JSON.stringify({ reply: 'Simulated: Service busy, echoing query.' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -66,7 +70,7 @@ async function handleProxy(request) {
   }
 }
 
-// DNS resolution.
+// DNS resolution with retries.
 async function resolveDomain(domain, retries = 2) {
   for (let i = 0; i <= retries; i++) {
     try {
@@ -83,12 +87,12 @@ async function resolveDomain(domain, retries = 2) {
   }
 }
 
-// Restricted IP check.
+// Restricted IP check (placeholder).
 function isRestrictedIP(ip) {
-  return false; // Placeholder.
+  return false;
 }
 
-// ChatGPT page (improved JS error handling).
+// ChatGPT page with enhanced UI.
 function getChatPage() {
   return `
 <!DOCTYPE html>
@@ -98,7 +102,7 @@ function getChatPage() {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ChatGPT - AI Assistant</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: #f5f5f5; display: flex; flex-direction: column; min-height: 100vh; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: #f5f5f5; display: flex; flex-direction: column; min-height:100vh; }
     header { background: #007bff; color: white; padding: 1rem; text-align: center; }
     main { max-width: 800px; margin: 2rem auto; background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); flex: 1; }
     h1 { font-size: 1.8rem; margin: 0; }
@@ -112,37 +116,11 @@ function getChatPage() {
   </style>
 </head>
 <body>
-  <header>
-    <h1>ChatGPT - AI Assistant</h1>
-  </header>
-  <main>
-    <p>Send a message to our AI assistant:</p>
-    <form id="chat">
-      <input name="msg" placeholder="Type your message..." required />
-      <button type="submit">Send</button>
-    </form>
-    <pre id="output"></pre>
-  </main>
-  <footer>
-    <p>&copy; 2025 AI Assistant Platform</p>
-  </footer>
+  <header><h1>ChatGPT - AI Assistant</h1></header>
+  <main><p>Send a message to our AI assistant:</p><form id="chat"><input name="msg" placeholder="Type your message..." required /><button type="submit">Send</button></form><pre id="output"></pre></main>
+  <footer><p>&copy; 2025 AI Assistant Platform</p></footer>
   <script>
-    document.getElementById('chat').onsubmit = async (e) => {
-      e.preventDefault();
-      const msg = e.target.msg.value;
-      const output = document.getElementById('output');
-      output.textContent = 'Sending...';
-      try {
-        const resp = await fetch('/api/reply?msg=' + encodeURIComponent(msg));
-        if (!resp.ok) throw new Error('Status: ' + resp.status);
-        const data = await resp.json();
-        output.textContent = data.reply || JSON.stringify(data, null, 2);
-        output.classList.remove('error');
-      } catch (err) {
-        output.textContent = 'Error: ' + err.message + '. Please try again.';
-        output.classList.add('error');
-      }
-    };
+    document.getElementById('chat').onsubmit=async(e)=>{e.preventDefault();const msg=e.target.msg.value,output=document.getElementById('output');output.textContent='Sending...';try{const resp=await fetch('/api/reply?msg='+encodeURIComponent(msg));if(!resp.ok)throw new Error('Status: '+resp.status);const data=await resp.json();output.textContent=data.reply||JSON.stringify(data,null,2);output.classList.remove('error')}catch(err){output.textContent='Error: '+err.message+'. Please try again.';output.classList.add('error')}};
   </script>
 </body>
 </html>`;
@@ -173,7 +151,7 @@ export default {
 
       return new Response(getChatPage(), { status: 200, headers: { 'Content-Type': 'text/html;charset=utf-8' } });
     } catch (err) {
-      console.error('Fetch error:', err);
+      console.error('Fetch error:', err.message);
       ctx.waitUntil(Promise.resolve().then(() => console.error('Logged:', err.message)));
       return new Response(getChatPage(), { status: 200, headers: { 'Content-Type': 'text/html;charset=utf-8' } });
     }
@@ -242,7 +220,7 @@ async function handleConnection(request, ctx) {
           }
           await handleTCP(remoteSocket, resolvedAddress, portRemote, rawData, webSocket, responseHeader);
         } catch (writeErr) {
-          console.error('Write error:', writeErr);
+          console.error('Write error:', writeErr.message);
           throw writeErr;
         }
       },
@@ -256,12 +234,12 @@ async function handleConnection(request, ctx) {
     ctx.waitUntil(Promise.resolve(readableStream.cancel()));
     return new Response(null, { status: 101, webSocket: client });
   } catch (err) {
-    console.error('Connection error:', err);
+    console.error('Connection error:', err.message);
     return new Response('WebSocket connection failed', { status: 500 });
   }
 }
 
-// TCP outbound.
+// TCP outbound with enhanced retry.
 async function handleTCP(remoteSocket, addressRemote, portRemote, rawData, webSocket, responseHeader) {
   try {
     let address = addressRemote.endsWith('.workers.dev') || addressRemote === 'workers.dev' ? target : addressRemote;
@@ -284,7 +262,7 @@ async function handleTCP(remoteSocket, addressRemote, portRemote, rawData, webSo
         tcpSocket.closed.catch(() => {}).finally(() => safeClose(webSocket));
         await pipeSocket(tcpSocket, webSocket, responseHeader, () => retry(attempt + 1));
       } catch (retryErr) {
-        console.error('Retry failed:', retryErr);
+        console.error('Retry failed:', retryErr.message);
         await new Promise(resolve => setTimeout(resolve, 300)); // Increased delay
         retry(attempt + 1);
       }
@@ -292,7 +270,7 @@ async function handleTCP(remoteSocket, addressRemote, portRemote, rawData, webSo
     const tcpSocket = await connectAndWrite(portRemote);
     await pipeSocket(tcpSocket, webSocket, responseHeader, retry);
   } catch (err) {
-    console.error('TCP error:', err);
+    console.error('TCP error:', err.message);
     safeClose(webSocket);
     throw err;
   }
@@ -453,12 +431,12 @@ for (let i = 0; i < 256; ++i) {
   byteToHex.push(i.toString(16).padStart(2, '0'));
 }
 
-// VLESS configs (dynamic: workers.dev only 80-series, custom domain full 80/443 series with TLS).
+// VLESS configs with dynamic TLS.
 function generateConfigs(userID, hostName) {
-  const httpPorts = ['80', '8080', '8880', '2052', '2082', '2086', '2095'];  // 80-series for all.
-  const httpsPorts = ['443', '8443', '2053', '2083', '2087', '2096'];  // 443-series only for custom domain.
+  const httpPorts = ['80', '8080', '8880', '2052', '2082', '2086', '2095']; // 80-series.
+  const httpsPorts = ['443', '8443', '2053', '2083', '2087', '2096']; // 443-series.
   const isWorkersDev = hostName.endsWith('.workers.dev');
-  const portsToUse = isWorkersDev ? httpPorts : [...httpPorts, ...httpsPorts];  // Limit for workers.dev.
+  const portsToUse = isWorkersDev ? httpPorts : [...httpPorts, ...httpsPorts];
   let configs = '连接节点信息：\n\n';
   if (isWorkersDev) {
     configs += '非TLS (HTTP, 80系列端口) 配置：\n';
