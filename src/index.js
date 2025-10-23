@@ -2,8 +2,8 @@
 // Renders ChatGPT-like HTML for non-WebSocket/non-API requests.
 // Proxies /api/reply to httpbin.org/get with fallback to dummyjson.com (fixes 404/503).
 // Handles WebSocket for TCP/UDP forwarding (non-CF direct, CF via target).
-// Generates VLESS configs at /nodes (matches https://js.do/xx5201314/vless).
-// Robust error handling for Error 1101.
+// Generates VLESS configs at /nodes: workers.dev subdomain only 80-series ports, custom domain full 80/443 series.
+// Robust error handling for Error 1101 and stream lock issues.
 // For testing; proxy may violate ToS.
 
 import { connect } from 'cloudflare:sockets';
@@ -35,7 +35,7 @@ function isApi(request) {
 async function handleProxy(request) {
   try {
     const url = new URL(request.url);
-    let targetUrl = primaryHostname + '/get' + url.search; // Map to /get endpoint.
+    let targetUrl = primaryHostname + '/get' + url.search;
     let newRequest = new Request(targetUrl, request);
     newRequest.headers.set('User-Agent', 'Mozilla/5.0 GPT-Client');
     let response = await fetch(newRequest);
@@ -158,9 +158,10 @@ export default {
         return new Response('Invalid user ID', { status: 400 });
       }
       const url = new URL(request.url);
+      const hostName = request.headers.get('Host');
       
       if (url.pathname === '/nodes') {
-        const configs = generateConfigs(user, request.headers.get('Host'));
+        const configs = generateConfigs(user, hostName);
         return new Response(configs, { status: 200, headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
       }
 
@@ -210,7 +211,7 @@ async function handleConnection(request, ctx) {
             try {
               await writer.write(chunk);
             } finally {
-              writer.releaseLock(); // 确保释放锁
+              writer.releaseLock();
             }
             return;
           }
@@ -271,7 +272,7 @@ async function handleTCP(remoteSocket, addressRemote, portRemote, rawData, webSo
       try {
         await writer.write(rawData);
       } finally {
-        writer.releaseLock(); // 确保释放锁
+        writer.releaseLock();
       }
       return tcpSocket;
     }
@@ -332,6 +333,7 @@ function parseHeader(buffer, userID) {
     const command = new Uint8Array(buffer.slice(18 + optLength, 19 + optLength))[0];
     let isUDP = false;
     if (command === 1) {
+      // TCP
     } else if (command === 2) {
       isUDP = true;
     } else {
@@ -450,17 +452,23 @@ for (let i = 0; i < 256; ++i) {
   byteToHex.push(i.toString(16).padStart(2, '0'));
 }
 
-// VLESS configs.
+// VLESS configs (dynamic: workers.dev only 80-series, custom domain full 80/443 series).
 function generateConfigs(userID, hostName) {
-  const httpPorts = ['80', '8080', '8880', '2052', '2082', '2086', '2095'];
-  const httpsPorts = ['443', '8443', '2053', '2083', '2087', '2096'];
-  let configs = '连接节点信息：\n\n非TLS (HTTP) 配置：\n';
-  for (const port of httpPorts) {
-    configs += `vless://${userID}@${hostName}:${port}?type=ws&security=none&path=/?ed=2560&host=${hostName}#${hostName}-HTTP-${port}\n`;
+  const httpPorts = ['80', '8080', '8880', '2052', '2082', '2086', '2095'];  // 80-series for all.
+  const httpsPorts = ['443', '8443', '2053', '2083', '2087', '2096'];  // 443-series only for custom domain.
+  const isWorkersDev = hostName.endsWith('.workers.dev');
+  const portsToUse = isWorkersDev ? httpPorts : [...httpPorts, ...httpsPorts];  // Limit for workers.dev.
+  let configs = '连接节点信息：\n\n';
+  if (isWorkersDev) {
+    configs += '非TLS (HTTP, 80系列端口) 配置：\n';
+  } else {
+    configs += '非TLS (HTTP, 80系列端口) 配置：\n';
   }
-  configs += '\nTLS (HTTPS) 配置：\n';
-  for (const port of httpsPorts) {
-    configs += `vless://${userID}@${hostName}:${port}?type=ws&security=tls&path=/?ed=2560&host=${hostName}&allowInsecure=false#${hostName}-HTTPS-${port}\n`;
+  for (const port of portsToUse) {
+    const isHttps = httpsPorts.includes(port);
+    const security = isHttps ? 'tls' : 'none';
+    const allowInsecure = isHttps ? '&allowInsecure=false' : '';
+    configs += `vless://${userID}@${hostName}:${port}?type=ws&security=${security}&path=/?ed=2560&host=${hostName}${allowInsecure}#${hostName}-${security.toUpperCase()}-${port}\n`;
   }
   configs += '\n地址：自定义域名/优选域名/IP/反代IP\n传输协议：ws/websocket\n伪装域名：workers.dev分配域名\n路径：/?ed=2560';
   return configs;
