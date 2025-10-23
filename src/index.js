@@ -4,7 +4,7 @@
 // Handles WebSocket for TCP/UDP forwarding with VLESS and NAT64 IPv6 prefixes.
 // Generates VLESS configs at /nodes: workers.dev (80-series), custom domain (80+443 series with TLS).
 // Supports NAT64 (2a02:898:146:64::, 2602:fc59:b0:64::, 2602:fc59:11:64::) as target for IPv6-only proxying.
-// Includes robust error handling and logging for V2RayN compatibility (10808/10809).
+// Includes robust error handling, logging, and V2RayN compatibility (10808/10809).
 // For testing; proxy may violate ToS.
 
 import { connect } from 'cloudflare:sockets';
@@ -30,12 +30,13 @@ function isApi(request) {
   return url.pathname.startsWith('/api/reply') || url.pathname.startsWith('/conversation');
 }
 
-// Proxy API with local echo (no external fetch to avoid 503).
+// Proxy API with local echo and logging.
 async function handleProxy(request) {
   try {
     const url = new URL(request.url);
     console.log('Proxy: Processing request for', url.pathname + url.search);
-    return new Response(JSON.stringify({ reply: `Echo: ${url.searchParams.get('msg') || 'Hello'}` }), {
+    const reply = `Echo: ${url.searchParams.get('msg') || 'Hello from NAT64 Worker'}`;
+    return new Response(JSON.stringify({ reply }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -223,6 +224,7 @@ async function handleTCP(remoteSocket, addressRemote, portRemote, rawData, webSo
     let address = addressRemote.endsWith('.workers.dev') || addressRemote === 'workers.dev' ? target : addressRemote;
     if (address.includes('::')) address = `[${address}]`; // Format IPv6
     if (!address || isRestrictedIP(address)) address = `[2602:fc59:11:64::]`; // Fallback NAT64
+    console.log('Connecting to:', address, 'port:', portRemote);
     async function connectAndWrite(port) {
       const tcpSocket = connect({ hostname: address, port });
       remoteSocket.value = tcpSocket;
@@ -366,7 +368,7 @@ function safeClose(socket) {
   }
 }
 
-// UDP (DNS only).
+// UDP (DNS only) with DNS64.
 async function handleUDP(webSocket, responseHeader) {
   let isClosed = false;
   const udpSocket = connect({ hostname: '2001:4860:4860::8888', port: 53 }); // Google DNS64
