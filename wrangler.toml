@@ -1,5 +1,5 @@
 name = "my-worker"
-account_id = "76abf68faef4a57f43947ab980872d68"  # 替换为你的Cloudflare Account ID
+account_id = "76abf68faef4a57f43947ab980872d68"  # 替换为你的真实账户ID
 main = "src/index.js"
 compatibility_date = "2025-10-22"
 workers_dev = true
