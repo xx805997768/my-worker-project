@@ -1,137 +1,121 @@
-import { connect } from 'cloudflare:sockets';
+const FILE_URLS = [
+  'https://free-ssr-clash.github.io/uploads/2025/10/0-20251024.txt',
+  'https://free-ssr-clash.github.io/uploads/2025/10/1-20251024.txt',
+  'https://free-ssr-clash.github.io/uploads/2025/10/2-20251024.txt',
+  'https://free-ssr-clash.github.io/uploads/2025/10/3-20251024.txt',
+  'https://free-ssr-clash.github.io/uploads/2025/10/4-20251024.txt'
+]
+const SECRET = '520'
 
-// 环境变量
-let user = '0acb0ed8-9c48-4048-b8d5-5c336bb76842';
-let target = '2a02:898:146:64::';
-let upstream = 'bpb.yousef.isegaro.com';
-
-// 验证 UUID
-function isValidUser(id) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
-}
-
-// 判断 WebSocket 请求
-function isWebSocket(request) {
-  return request.headers.get('Upgrade') === 'websocket';
-}
-
-// API 本地 echo 代理
-async function handleApi(request) {
-  const url = new URL(request.url);
-  const reply = `Echo: ${url.searchParams.get('msg') || 'Hello from Worker'}`;
-  return new Response(JSON.stringify({ reply }), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
-
-// 简单 HTML 测试页面
-function getHtmlPage() {
-  return `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ChatGPT Worker</title>
-<style>
-body { font-family:sans-serif; background:#f5f5f5; margin:0; padding:0; }
-header{background:#007bff;color:#fff;padding:1rem;text-align:center;}
-main{max-width:800px;margin:2rem auto;background:#fff;padding:2rem;border-radius:8px;}
-input, button {padding:0.8rem;font-size:1rem;}
-pre {background:#f8f9fa;padding:1rem;border-radius:4px;}
-</style>
-</head>
-<body>
-<header><h1>ChatGPT Worker</h1></header>
-<main>
-<form id="chat">
-<input name="msg" placeholder="Type message..." required />
-<button type="submit">Send</button>
-</form>
-<pre id="output"></pre>
-</main>
-<script>
-document.getElementById('chat').onsubmit=async(e)=>{
-e.preventDefault();
-const msg=e.target.msg.value;
-const output=document.getElementById('output');
-output.textContent='Sending...';
-try{
-  const resp=await fetch('/api/reply?msg='+encodeURIComponent(msg));
-  const data=await resp.json();
-  output.textContent=data.reply||JSON.stringify(data,null,2);
-}catch(err){
-  output.textContent='Error: '+err.message;
-}};
-</script>
-</body>
-</html>`;
-}
-
-// WebSocket 连接处理（VLESS over WS）
-async function handleWs(request, env, ctx) {
-  const wsPair = new WebSocketPair();
-  const [client, server] = Object.values(wsPair);
-  server.accept();
-
-  server.addEventListener('message', async (e) => {
-    try {
-      const buffer = e.data instanceof ArrayBuffer ? e.data : e.data.buffer;
-      const { hasError, portRemote } = parseHeader(buffer, user);
-      if (hasError) return;
-
-      // 中转到 IPv4 上游
-      const tcpSocket = connect({ hostname: upstream, port: portRemote });
-      const writer = tcpSocket.writable.getWriter();
-      await writer.write(buffer.slice(24)); // 去掉 header
-      writer.releaseLock();
-
-      tcpSocket.readable.pipeTo(new WritableStream({
-        write(chunk) { server.send(chunk); },
-        close() { server.close(); },
-        abort(err) { server.close(); }
-      }));
-    } catch (err) {
-      console.error('WS message error:', err);
-      server.close();
-    }
-  });
-
-  server.addEventListener('close', () => server.close());
-  return new Response(null, { status: 101, webSocket: client });
-}
-
-// 解析 VLESS Header
-function parseHeader(buffer, userID) {
-  if (buffer.byteLength < 24) return { hasError: true };
-  const idCheck = new Uint8Array(buffer.slice(1,17));
-  const userStr = Array.from(idCheck).map(x=>x.toString(16).padStart(2,'0')).join('-');
-  if (userStr !== userID) return { hasError:true };
-  const portRemote = new DataView(buffer.slice(19,21)).getUint16(0);
-  return { hasError:false, portRemote };
-}
-
-// Worker 主入口
 export default {
   async fetch(request, env, ctx) {
-    user = env.user || user;
-    target = env.target || target;
-    upstream = env.upstream || upstream;
-
-    if (!isValidUser(user)) return new Response('Invalid UUID', { status: 400 });
-
-    const url = new URL(request.url);
-
-    if (url.pathname === '/nodes') {
-      return new Response(`vless://${user}@${url.host}:443?type=ws&security=tls&path=/?ed=2560`, {
-        status: 200,
-        headers: { 'Content-Type': 'text/plain' }
-      });
+    const url = new URL(request.url)
+    if (url.pathname === '/sub') {
+      // 整合订阅API，给V2ray客户端用，直接返回base64节点串！
+      const links = await fetchAndMergeLinks()
+      const encoded = btoa(links)
+      return new Response(encoded, {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'no-store'
+        }
+      })
     }
 
-    if (isWebSocket(request)) return handleWs(request, env, ctx);
-    if (url.pathname.startsWith('/api/reply')) return handleApi(request);
-    return new Response(getHtmlPage(), { status: 200, headers: { 'Content-Type': 'text/html' } });
-  },
-};
+    if (request.method === 'POST') {
+      const formData = await request.formData()
+      const input = formData.get('q') || ''
+      if (input.trim() === SECRET) {
+        const links = await fetchAndMergeLinks()
+        const encoded = btoa(links)
+        return new Response(renderGPTPage(links, encoded), {
+          headers: { 'Content-Type': 'text/html' }
+        })
+      } else {
+        return new Response(renderGPTPage(), {
+          headers: { 'Content-Type': 'text/html' }
+        })
+      }
+    }
+
+    // GET首页显示模拟GPT
+    return new Response(renderGPTPage(), {
+      headers: { 'Content-Type': 'text/html' }
+    })
+  }
+}
+
+function renderGPTPage(links = '', encoded = '') {
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>GPT Chat订阅</title>
+  <style>
+    body { font-family: sans-serif; background: #f5f5f5; padding: 2em; }
+    .chatbox { background: white; padding: 1em; border-radius: 8px; max-width: 700px; margin: auto; }
+    input[type=text] { width: 100%; padding: 0.5em; margin-top: 1em; }
+    .resultbox { background: #f3f7fa; padding: 1em; margin-top: 2em; border-radius: 6px; word-break:break-all; }
+    .subcopy { background: #eee; padding: 0.7em; border-radius:4px; }
+    .nodeitem { font-family:monospace; font-size:0.95em; }
+  </style>
+</head>
+<body>
+  <div class="chatbox">
+    <h2>GPT Chat订阅</h2>
+    <p>你好，我是你的 AI 助手。请输入问题（输入<span style="color:#f33;font-weight:bold;">520</span>获取所有节点和整合订阅）：</p>
+    <form id="gpform" method="POST">
+      <input type="text" name="q" placeholder="请输入内容..." autofocus required />
+      <button type="submit" style="margin-top:10px;">提交</button>
+    </form>
+    ${
+      links
+        ? `
+        <div class="resultbox">
+          <h3>所有节点链接：</h3>
+          <div style="max-height:280px;overflow:auto;">
+            ${links.split('\n').map(l => `<div class="nodeitem">${l}</div>`).join('')}
+          </div>
+          <h3>整合订阅（base64，复制链接添加到V2ray）：</h3>
+          <div class="subcopy" id="base64sub" style="word-break:break-all;">${encoded}</div>
+          <button onclick="navigator.clipboard.writeText('${encoded}').then(()=>alert('已复制！'));">复制整合订阅</button>
+          <div style="margin-top:20px;color:#888;font-size:0.95em;">
+            <b>V2ray节点自动更新方法：</b><br>
+            在V2ray客户端订阅地址添加 <span style="color:#0077ff">https://你的worker地址/sub</span><br>
+            以后V2ray会自动获取最新节点，无需再访问本页！
+          </div>
+        </div>
+        `
+        : ''
+    }
+  </div>
+  <script>
+    // 表单提交默认会刷新页面显示对话和节点
+  </script>
+</body>
+</html>
+`
+}
+
+async function fetchAndMergeLinks() {
+  let allLinks = [];
+  for (const url of FILE_URLS) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 9000);
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeout);
+      if (!res.ok) continue;
+      const base64txt = await res.text();
+      let decoded;
+      try {
+        decoded = atob(base64txt);
+      } catch (e) {
+        decoded = '';
+      }
+      const matches = decoded.match(/(vmess|vless|trojan|ss):\/\/[^\s]+/g);
+      if (matches) allLinks.push(...matches);
+    } catch (e) {continue;}
+  }
+  return allLinks.join('\n');
+}
