@@ -1,0 +1,124 @@
+const FILE_URLS = [
+  "https://raw.githubusercontent.com/kismetpro/NodeSuber/main/out/All_Configs_Sub.txt",
+  "https://raw.githubusercontent.com/kismetpro/NodeSuber/main/Splitted-By-Protocol/vless.txt",
+  "https://raw.githubusercontent.com/kismetpro/NodeSuber/main/Splitted-By-Protocol/vmess.txt",
+  "https://raw.githubusercontent.com/kismetpro/NodeSuber/main/Splitted-By-Protocol/tuic.txt",
+  "https://raw.githubusercontent.com/kismetpro/NodeSuber/main/Splitted-By-Protocol/hy2.txt",
+];
+const SECRET = "520";
+
+// btoa helper（兼容 Cloudflare Workers 环境）
+function base64encode(str) {
+  if (typeof btoa !== "undefined") return btoa(unescape(encodeURIComponent(str)));
+  return Buffer.from(str, "utf-8").toString("base64");
+}
+
+// 提取所有协议行并去重
+async function fetchAndMergeLinks() {
+  const allLinks = new Set();
+  for (const url of FILE_URLS) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 9000);
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeout);
+      if (!res.ok) continue;
+      const txt = await res.text();
+      // 支持 vmess, vless, tuic, ss, trojan, hy2 等
+      const matches = txt.match(/(vmess|vless|trojan|ss|tuic|hy2):\/\/[^\s#"]+/gi);
+      if (matches) for (const link of matches) allLinks.add(link.trim());
+    } catch (e) {}
+  }
+  return Array.from(allLinks).join("\n");
+}
+
+function renderGPTPage(links = "", encoded = "") {
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>GPT Chat订阅</title>
+  <style>
+    body { font-family: sans-serif; background: #f5f5f5; padding: 2em; }
+    .chatbox { background: white; padding: 1em; border-radius: 8px; max-width: 700px; margin: auto; }
+    input[type=text] { width: 100%; padding: 0.5em; margin-top: 1em; }
+    .resultbox { background: #f3f7fa; padding: 1em; margin-top: 2em; border-radius: 6px; word-break:break-all; }
+    .subcopy { background: #eee; padding: 0.7em; border-radius:4px; }
+    .nodeitem { font-family:monospace; font-size:0.95em; }
+    button { margin-top:10px; }
+  </style>
+</head>
+<body>
+  <div class="chatbox">
+    <h2>GPT Chat订阅</h2>
+    <p>你好，我是你的 AI 助手。请输入问题（输入<span style="color:#f33;font-weight:bold;">520</span>获取所有节点和整合订阅）：</p>
+    <form id="gpform" method="POST">
+      <input type="text" name="q" placeholder="请输入内容..." autofocus required />
+      <button type="submit">提交</button>
+    </form>
+    ${
+      links
+        ? `
+        <div class="resultbox">
+          <h3>所有节点链接：</h3>
+          <div style="max-height:280px;overflow:auto;">
+            ${links.split('\n').map(l => `<div class="nodeitem">${l}</div>`).join('')}
+          </div>
+          <h3>整合订阅（base64，复制链接添加到V2ray）：</h3>
+          <div class="subcopy" id="base64sub" style="word-break:break-all;">${encoded}</div>
+          <button onclick="navigator.clipboard.writeText(document.getElementById('base64sub').innerText).then(()=>alert('已复制！'));">复制整合订阅</button>
+          <div style="margin-top:20px;color:#888;font-size:0.95em;">
+            <b>V2ray节点自动更新方法：</b><br>
+            在V2ray客户端订阅地址添加 <span style="color:#0077ff">https://你的worker.workers.dev/sub</span><br>
+            以后V2ray会自动获取最新节点，无需再访问本页！
+          </div>
+        </div>
+        `
+        : ''
+    }
+  </div>
+</body>
+</html>
+  `;
+}
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    // 订阅接口：base64合并输出
+    if (url.pathname === "/sub") {
+      const links = await fetchAndMergeLinks();
+      const encoded = base64encode(links);
+      return new Response(encoded, {
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store"
+        }
+      });
+    }
+
+    // Web页面带问答
+    if (request.method === "POST") {
+      const formData = await request.formData();
+      const input = (formData.get("q") || "").trim();
+      if (input === SECRET) {
+        const links = await fetchAndMergeLinks();
+        const encoded = base64encode(links);
+        return new Response(renderGPTPage(links, encoded), {
+          headers: { "Content-Type": "text/html; charset=utf-8" }
+        });
+      } else {
+        return new Response(renderGPTPage(), {
+          headers: { "Content-Type": "text/html; charset=utf-8" }
+        });
+      }
+    }
+
+    // 默认首页
+    return new Response(renderGPTPage(), {
+      headers: { "Content-Type": "text/html; charset=utf-8" }
+    });
+  }
+};
