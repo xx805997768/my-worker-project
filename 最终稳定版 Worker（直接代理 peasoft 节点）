@@ -1,0 +1,81 @@
+const SOURCE_URL = "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list.txt";
+const SECRET = "520";
+
+// 伪装成 GPT 对话页面
+function renderGPTPage(links = "") {
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>GPT Chat</title>
+  <style>
+    body { font-family: sans-serif; background: #f5f5f5; padding: 2em; }
+    .chatbox { background: white; padding: 1em; border-radius: 8px; max-width: 700px; margin: auto; }
+    input[type=text] { width: 100%; padding: 0.5em; margin-top: 1em; }
+    .resultbox { background: #f3f7fa; padding: 1em; margin-top: 2em; border-radius: 6px; word-break:break-all; }
+    .nodeitem { font-family:monospace; font-size:0.95em; }
+  </style>
+</head>
+<body>
+  <div class="chatbox">
+    <h2>GPT Chat</h2>
+    <p>你好，我是你的 AI 助手。请输入你的问题：</p>
+    <form method="POST">
+      <input type="text" name="q" placeholder="请输入内容..." autofocus required />
+      <button type="submit">发送</button>
+    </form>
+
+    ${
+      links
+        ? `
+        <div class="resultbox">
+          <h3>节点列表：</h3>
+          <div style="max-height:280px;overflow:auto;">
+            ${links.split('\\n').map(l => `<div class="nodeitem">${l}</div>`).join('')}
+          </div>
+        </div>
+        `
+        : ''
+    }
+  </div>
+</body>
+</html>
+  `;
+}
+
+export default {
+  async fetch(request) {
+    const url = new URL(request.url);
+
+    // 直接代理 peasoft 源（你想要的效果）
+    if (url.pathname === "/sub" || url.pathname === "/raw") {
+      const res = await fetch(SOURCE_URL, {
+        headers: { "User-Agent": "Mozilla/5.0" }
+      });
+      const txt = await res.text();
+      return new Response(txt, {
+        headers: { "Content-Type": "text/plain; charset=utf-8" }
+      });
+    }
+
+    // GPT 伪装页面
+    if (request.method === "POST") {
+      const formData = await request.formData();
+      const input = (formData.get("q") || "").trim();
+
+      if (input === SECRET) {
+        const res = await fetch(SOURCE_URL);
+        const txt = await res.text();
+        return new Response(renderGPTPage(txt), {
+          headers: { "Content-Type": "text/html; charset=utf-8" }
+        });
+      }
+    }
+
+    // 默认首页（伪装）
+    return new Response(renderGPTPage(), {
+      headers: { "Content-Type": "text/html; charset=utf-8" }
+    });
+  }
+};
